@@ -143,6 +143,7 @@ fun stopAllEmulators(
         completableProcess: (List<String>, Pair<Int, TimeUnit>?) -> Completable = ::completableProcess
 ) {
     val startTime = System.nanoTime()
+    val timeoutTime = startTime + NANOSECONDS.convert(args.timeoutSeconds.toLong(), SECONDS)
 
     connectedEmulators()
             .map { emulators ->
@@ -159,6 +160,18 @@ fun stopAllEmulators(
             .doOnError { log("Error during stopping emulators, error = $it.") }
             .doOnCompleted { log("All emulators stopped.") }
             .await()
+
+    while (true) {
+        val emulators = connectedEmulators().toBlocking().value()
+        val timeLeftMillis = System.nanoTime() - timeoutTime / 1000L
+        if (emulators.isEmpty()) {
+            break
+        } else if (timeLeftMillis <= 0L) {
+            throw TimeoutException("Timed out waiting for emulators to stop.")
+        } else {
+            Thread.sleep(minOf(timeLeftMillis, 100L))
+        }
+    }
 
     log("Swarmer: - \"My job is done here, took ${(System.nanoTime() - startTime).nanosAsSeconds()} seconds, bye bye.\"")
 }
@@ -347,7 +360,7 @@ private fun outputDirectory(args: Commands.Start) =
         }
 
 private fun connectedEmulators(): Single<Set<AdbDevice>> =
-        connectedAdbDevices().take(1).toSingle().map { it.filter { it.isEmulator }.toSet() }
+        connectedAdbDevicesNoModel().take(1).toSingle().map { it.filter { it.isEmulator }.toSet() }
 
 private fun createdEmulators(args: Commands.Start, timeout: Pair<Int, TimeUnit> = 60 to SECONDS): Single<Set<String>> =
         process(
@@ -363,3 +376,41 @@ private fun createdEmulators(args: Commands.Start, timeout: Pair<Int, TimeUnit> 
                             .map { it.trim() }
                             .toSet()
                 }
+
+private fun connectedAdbDevicesNoModel(): Observable<Set<AdbDevice>> = process(listOf(adb, "devices"), unbufferedOutput = true)
+    .ofType(Notification.Exit::class.java)
+    .map { it.output.readText() }
+    .map {
+        when (it.contains("List of devices attached")) {
+            true -> it
+            false -> throw IllegalStateException("Adb output is not correct: $it.")
+        }
+    }
+    .retry { retryCount, exception ->
+        val shouldRetry = retryCount < 5 && exception is IllegalStateException
+        if (shouldRetry) {
+            log("connectedAdbDevices: retrying $exception.")
+        }
+
+        shouldRetry
+    }
+    .flatMapIterable {
+        it
+            .substringAfter("List of devices attached")
+            .split(System.lineSeparator())
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+            .filter { it.contains("online") || it.contains("device") }
+    }
+    .map { line ->
+        val serial = line.substringBefore("\t")
+        val online = when {
+            line.contains("offline", ignoreCase = true) -> false
+            line.contains("device", ignoreCase = true) -> true
+            else -> throw IllegalStateException("Unknown adb output for device: $line")
+        }
+        AdbDevice(id = serial, online = online)
+    }
+    .toList()
+    .map { it.toSet() }
+    .doOnError { log("Error during getting connectedAdbDevices, error = $it") }
