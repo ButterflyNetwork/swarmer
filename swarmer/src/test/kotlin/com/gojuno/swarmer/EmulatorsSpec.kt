@@ -32,7 +32,14 @@ class EmulatorsSpec : Spek({
     ).forEach { command ->
         describe("emulator stop called with timeout ${command.timeoutSeconds}") {
             val connectedEmulators by memoized {
-                { Single.just(ADB_DEVICES) }
+                var i = 0
+                {
+                    i += 1
+                    if (i % 2 == 1)
+                        Single.just(ADB_DEVICES)
+                    else
+                        Single.just(emptySet())
+                }
             }
             val startProcess by memoized {
                 mock<(List<String>, Pair<Int, TimeUnit>?) -> Completable>().apply {
