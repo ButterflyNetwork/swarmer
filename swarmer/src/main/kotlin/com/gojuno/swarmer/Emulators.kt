@@ -163,10 +163,13 @@ fun stopAllEmulators(
 
     while (true) {
         val emulators = connectedEmulators().toBlocking().value()
+        val timeLeftMillis = System.nanoTime() - timeoutTime / 1000L
         if (emulators.isEmpty()) {
             break
-        } else if (System.nanoTime() > timeoutTime) {
+        } else if (timeLeftMillis <= 0L) {
             throw TimeoutException("Timed out waiting for emulators to stop.")
+        } else {
+            Thread.sleep(minOf(timeLeftMillis, 100L))
         }
     }
 
